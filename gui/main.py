@@ -45,12 +45,16 @@ def apply_dark_palette(app: QApplication) -> None:
 def main() -> None:
     import argparse
     parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--port", default=None)
+    parser.add_argument("--arduino-port", default="/dev/cu.usbserial-1120")
+    parser.add_argument("--esp32-port",   default="/dev/cu.usbserial-0001")
     args, qt_args = parser.parse_known_args()
 
     app = QApplication([sys.argv[0]] + qt_args)
     apply_dark_palette(app)
-    window = MainWindow(auto_port=args.port)
+    window = MainWindow(
+        arduino_port=args.arduino_port,
+        esp32_port=args.esp32_port,
+    )
     window.show()
     sys.exit(app.exec_())
 

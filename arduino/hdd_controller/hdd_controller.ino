@@ -2,6 +2,10 @@
 //  HDD Controller — Rotor (Platter) + Actuator Arm
 //  Serial Command Protocol (9600 baud, '\n' terminated):
 //
+//  Physical connections to ESP32 (PLACEHOLDER):
+//    PIN 4  (TRIGGER_OUT) → ESP32 GPIO18  [level shifter 5V→3.3V]
+//    PIN 2  (SS TX)       → ESP32 GPIO16  [level shifter 5V→3.3V]
+//
 //  PC -> Arduino:
 //    SET maxS <val>             (0-255)
 //    SET targetStepD <val>      (ms)
@@ -22,6 +26,15 @@
 //    STATUS: key=value ...      (response to GET STATUS)
 //    existing Serial.println() log lines
 // ============================================================
+
+#include <SoftwareSerial.h>
+
+// [ESP32 동기화 핀 설정 (PLACEHOLDER)]
+const int PIN_TRIGGER_OUT = 4;   // 상 변화 시 pulse → ESP32 GPIO18
+const int PIN_SS_RX       = 7;   // SoftwareSerial RX (ARM_EN=3 충돌 방지)
+const int PIN_SS_TX       = 2;   // SoftwareSerial TX → ESP32 GPIO16
+
+SoftwareSerial esp32Serial(PIN_SS_RX, PIN_SS_TX);
 
 // [로터(플래터) 핀 설정]
 const int pinU = 8;
@@ -174,6 +187,19 @@ void setPhase(bool u, bool v, bool w, int speed) {
   digitalWrite(pinW, w);
   analogWrite(ENA, speed);
   analogWrite(ENB, speed);
+
+  // ── Trigger pulse + r/theta 전송 → ESP32 ──────────────────────────────
+  // Trigger: brief HIGH pulse (≈10 µs)
+  digitalWrite(PIN_TRIGGER_OUT, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(PIN_TRIGGER_OUT, LOW);
+
+  // r,theta 전송 (SoftwareSerial, 9600 baud)
+  esp32Serial.print(currentArmPWM);
+  esp32Serial.print(',');
+  esp32Serial.print(rotationCounter);
+  esp32Serial.print('\n');
+
   longDelay(currentStepD);
 }
 
@@ -238,9 +264,12 @@ void updateArmPosition() {
 // ============================================================
 void setup() {
   Serial.begin(9600);
-  pinMode(ENA,     OUTPUT); pinMode(ENB,     OUTPUT);
-  pinMode(pinU,    OUTPUT); pinMode(pinV,    OUTPUT); pinMode(pinW, OUTPUT);
-  pinMode(ARM_IN1, OUTPUT); pinMode(ARM_IN2, OUTPUT); pinMode(ARM_EN, OUTPUT);
+  esp32Serial.begin(9600);
+  pinMode(ENA,          OUTPUT); pinMode(ENB,     OUTPUT);
+  pinMode(pinU,         OUTPUT); pinMode(pinV,    OUTPUT); pinMode(pinW, OUTPUT);
+  pinMode(ARM_IN1,      OUTPUT); pinMode(ARM_IN2, OUTPUT); pinMode(ARM_EN, OUTPUT);
+  pinMode(PIN_TRIGGER_OUT, OUTPUT);
+  digitalWrite(PIN_TRIGGER_OUT, LOW);
 
   // PWM 주파수 높이기 (핀 5, 6, 3)
   TCCR0B = (TCCR0B & 0b11111000) | 0x01;

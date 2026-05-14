@@ -28,9 +28,21 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 #  경로 설정
 # ---------------------------------------------------------------------------
-REPO_ROOT   = Path(__file__).parent.parent.resolve()
-SKETCH_PATH = REPO_ROOT / "arduino" / "hdd_controller"
-DEFAULT_FQBN = "arduino:avr:uno"
+REPO_ROOT = Path(__file__).parent.parent.resolve()
+
+# 바이드 FQBN / 스케치 디렉토리
+DEVICE_CONFIGS: dict[str, dict] = {
+    "arduino": {
+        "fqbn":   "arduino:avr:uno",
+        "sketch": REPO_ROOT / "arduino" / "hdd_controller",
+    },
+    "esp32": {
+        "fqbn":   "esp32:esp32:esp32",
+        "sketch": REPO_ROOT / "arduino" / "esp32_controller",
+    },
+}
+DEFAULT_FQBN    = DEVICE_CONFIGS["arduino"]["fqbn"]
+SKETCH_PATH     = DEVICE_CONFIGS["arduino"]["sketch"]  # 하호환성 유지
 
 
 # ---------------------------------------------------------------------------
@@ -127,35 +139,45 @@ def upload_sketch(cli: str, fqbn: str, port: str) -> None:
 #  main
 # ---------------------------------------------------------------------------
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Arduino 스케치 빌드/업로드")
-    parser.add_argument("--port",         default=None,        help="시리얼 포트 (예: /dev/cu.usbmodem1401)")
-    parser.add_argument("--fqbn",         default=DEFAULT_FQBN, help=f"보드 FQBN (기본: {DEFAULT_FQBN})")
+    parser = argparse.ArgumentParser(description="Arduino/ESP32 스케치 빌드/업로드")
+    parser.add_argument("--device",      default="arduino",
+                        choices=list(DEVICE_CONFIGS.keys()),
+                        help="대상 디바이스 (arduino | esp32, 기본: arduino)")
+    parser.add_argument("--port",         default=None,
+                        help="시리얼 포트 (예: /dev/cu.usbserial-1120)")
+    parser.add_argument("--fqbn",         default=None,
+                        help="보드 FQBN (지정 안 하면 --device 에서 자동 선택)")
     parser.add_argument("--compile-only", action="store_true",  help="컴파일만 수행")
     parser.add_argument("--upload-only",  action="store_true",  help="업로드만 수행 (사전에 컴파일 필요)")
     args = parser.parse_args()
 
+    cfg  = DEVICE_CONFIGS[args.device]
+    fqbn = args.fqbn or cfg["fqbn"]
+
+    # SKETCH_PATH 업데이트 (컴파일/업로드 함수가 모듈 수준 변수를 사용하므로)
+    global SKETCH_PATH
+    SKETCH_PATH = cfg["sketch"]
+
     cli = _check_arduino_cli()
+    print(f"[INFO] device={args.device}  fqbn={fqbn}  sketch={SKETCH_PATH}")
 
     if args.upload_only and not args.compile_only:
-        # 업로드만
-        port = args.port or find_arduino_port(cli, args.fqbn)
+        port = args.port or find_arduino_port(cli, fqbn)
         if not port:
-            print("[ERROR] Arduino 포트를 찾을 수 없습니다. --port 로 직접 지정하세요.", file=sys.stderr)
+            print("[ERROR] 포트를 찾을 수 없습니다. --port 로 직접 지정하세요.", file=sys.stderr)
             sys.exit(1)
-        upload_sketch(cli, args.fqbn, port)
+        upload_sketch(cli, fqbn, port)
 
     elif args.compile_only:
-        # 컴파일만
-        compile_sketch(cli, args.fqbn)
+        compile_sketch(cli, fqbn)
 
     else:
-        # 컴파일 + 업로드 (기본)
-        compile_sketch(cli, args.fqbn)
-        port = args.port or find_arduino_port(cli, args.fqbn)
+        compile_sketch(cli, fqbn)
+        port = args.port or find_arduino_port(cli, fqbn)
         if not port:
-            print("[ERROR] Arduino 포트를 찾을 수 없습니다. --port 로 직접 지정하세요.", file=sys.stderr)
+            print("[ERROR] 포트를 찾을 수 없습니다. --port 로 직제 지정하세요.", file=sys.stderr)
             sys.exit(1)
-        upload_sketch(cli, args.fqbn, port)
+        upload_sketch(cli, fqbn, port)
 
     print("\n[DONE]")
 
