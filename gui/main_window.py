@@ -56,6 +56,9 @@ ALL_PARAM_GROUPS: list[tuple] = [
 
 MERGED_COLUMNS = ["Timestamp", "r (arm PWM)", "θ (rot step)", "Strain avg", "N samples", "Z target"]
 
+# 테이블에는 전체 trigger 중 이 간격마다 1행만 표시 (전체 데이터는 _merged_rows에 보존)
+_TABLE_STRIDE = 50
+
 
 # ---------------------------------------------------------------------------
 #  MainWindow
@@ -92,6 +95,8 @@ class MainWindow(QMainWindow):
         self._polar_r:      list[float] = []
         self._polar_strain: list[float] = []
         self._polar_dirty = False
+        self._prev_trig_theta: float | None = None  # for inter-trigger theta interpolation
+        self._trig_count = 0  # 수신된 trigger 총 횟수 (테이블 표시 throttle용)
 
         self._build_ui()
         self._setup_port_refresh_timer()
@@ -476,7 +481,7 @@ class MainWindow(QMainWindow):
         ctrl_row.addWidget(QLabel("Steps/Rev:"))
         self._steps_per_rev_sb = QSpinBox()
         self._steps_per_rev_sb.setRange(1, 999999)
-        self._steps_per_rev_sb.setValue(240)
+        self._steps_per_rev_sb.setValue(18)
         self._steps_per_rev_sb.setToolTip("1회전당 trigger 횟수 (theta 정규화에 사용)")
         ctrl_row.addWidget(self._steps_per_rev_sb)
         ctrl_row.addStretch()
@@ -695,22 +700,40 @@ class MainWindow(QMainWindow):
         n          = data["n"]
         z_tgt      = self._current_z_target
 
-        row_idx = self._merged_table.rowCount()
-        self._merged_table.insertRow(row_idx)
-        for col, val in enumerate([ts, r, theta, strain_avg, n, z_tgt]):
-            item = QTableWidgetItem(str(val))
-            item.setTextAlignment(Qt.AlignCenter)
-            self._merged_table.setItem(row_idx, col, item)
-        self._merged_table.scrollToBottom()
-
+        self._trig_count += 1
         self._merged_rows.append((ts, r, theta, strain_avg, n, z_tgt))
-        self._row_count_lbl.setText(f"{len(self._merged_rows)} rows")
+
+        # 테이블에는 _TABLE_STRIDE 마다 1행만 삽입 (표시 성능 유지)
+        if self._trig_count % _TABLE_STRIDE == 1:
+            row_idx = self._merged_table.rowCount()
+            self._merged_table.insertRow(row_idx)
+            for col, val in enumerate([ts, r, theta, strain_avg, n, z_tgt]):
+                item = QTableWidgetItem(str(val))
+                item.setTextAlignment(Qt.AlignCenter)
+                self._merged_table.setItem(row_idx, col, item)
+            self._merged_table.scrollToBottom()
+
+        self._row_count_lbl.setText(f"{len(self._merged_rows)} rows (table: every {_TABLE_STRIDE}th)")
         self._strain_lbl.setText(str(strain_avg))
 
-        # polar plot 데이터 누적
-        self._polar_theta.append(theta)
-        self._polar_r.append(r)
-        self._polar_strain.append(strain_avg)
+        # polar plot 데이터 누적 — 개별 샘플을 이전 trigger ~ 현재 trigger theta 사이에 균일 배치
+        samples = data.get("samples", [])
+        if samples:
+            prev = self._prev_trig_theta
+            for i, sv in enumerate(samples):
+                if prev is None:
+                    t = float(theta)
+                else:
+                    t = prev + (i + 1) * (theta - prev) / len(samples)
+                self._polar_theta.append(t)
+                self._polar_r.append(r)
+                self._polar_strain.append(sv)
+        else:
+            # fallback: firmware가 samples를 보내지 않은 경우 평균 1점
+            self._polar_theta.append(float(theta))
+            self._polar_r.append(r)
+            self._polar_strain.append(strain_avg)
+        self._prev_trig_theta = float(theta)
         self._polar_dirty = True
 
     def _clear_merged_table(self):
@@ -719,6 +742,8 @@ class MainWindow(QMainWindow):
         self._polar_theta.clear()
         self._polar_r.clear()
         self._polar_strain.clear()
+        self._prev_trig_theta = None
+        self._trig_count = 0
         self._polar_ax.clear()
         self._polar_ax.set_facecolor("#1e1e1e")
         self._polar_ax.tick_params(colors="#888", labelsize=7)

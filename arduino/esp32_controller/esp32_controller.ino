@@ -74,6 +74,14 @@ int            strain_snapshot_n   = 0;
 int            snapshot_r      = 0;
 int            snapshot_theta  = 0;
 
+// ── Sample ring buffer (keeps up to 16 ADC readings per trigger interval) ────
+// 16 samples × ~5 bytes = ~80 bytes TX per TRIG → ~7 ms at 115200 baud
+// (64 samples took ~31 ms and caused gap sectors due to loop() blocking)
+static const int STRAIN_BUF_SIZE = 16;
+static int    strain_buf[STRAIN_BUF_SIZE];
+static int    strain_buf_pos  = 0;   // next write index
+static int    strain_buf_fill = 0;   // valid entries (≤ STRAIN_BUF_SIZE)
+
 // ── UART receive buffer for Arduino r,theta ──────────────────────────────────
 static char    uart_buf[32];
 static int     uart_buf_pos    = 0;
@@ -231,10 +239,13 @@ void loop() {
   processSerial();
   processArduinoUART();
 
-  // ── Continuous strain sampling into accumulator ──────────────────────────
+  // ── Continuous strain sampling into accumulator + ring buffer ─────────────
   int raw = analogRead(PIN_STRAIN) - strain_offset;
   strain_sum   += raw;
   strain_count += 1;
+  strain_buf[strain_buf_pos] = raw;
+  strain_buf_pos = (strain_buf_pos + 1) % STRAIN_BUF_SIZE;
+  if (strain_buf_fill < STRAIN_BUF_SIZE) strain_buf_fill++;
 
   // ── Handle trigger event ─────────────────────────────────────────────────
   if (trig_fired) {
@@ -256,11 +267,23 @@ void loop() {
     strain_sum   = 0;
     strain_count = 0;
 
-    // Emit merged record
+    // Emit merged record with individual samples
+    int buf_total = strain_buf_fill;
+    int buf_start = (buf_total < STRAIN_BUF_SIZE) ? 0
+                  : strain_buf_pos;   // oldest entry in circular buffer
+    strain_buf_pos  = 0;
+    strain_buf_fill = 0;
+
     Serial.print("TRIG: r=");           Serial.print(snapshot_r);
     Serial.print(" theta=");            Serial.print(snapshot_theta);
     Serial.print(" strain_avg=");       Serial.print(strain_snapshot_avg);
-    Serial.print(" n=");                Serial.println(strain_snapshot_n);
+    Serial.print(" n=");                Serial.print(strain_snapshot_n);
+    Serial.print(" samples=");
+    for (int _i = 0; _i < buf_total; _i++) {
+      if (_i > 0) Serial.print(",");
+      Serial.print(strain_buf[(buf_start + _i) % STRAIN_BUF_SIZE]);
+    }
+    Serial.println();
   }
 
   // ── PI control loop (Z-axis voice coil) ─────────────────────────────────

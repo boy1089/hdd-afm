@@ -123,16 +123,27 @@ class Esp32Comm(QObject):
 
     @staticmethod
     def _parse_trig(line: str) -> dict | None:
-        """'TRIG: r=<r> theta=<theta> strain_avg=<avg> n=<n>' 파싱."""
+        """'TRIG: r=<r> theta=<theta> strain_avg=<avg> n=<n> samples=<v0>,<v1>,...' 파싱.
+
+        Returns {"r": int, "theta": int, "strain_avg": int, "n": int, "samples": list[int]}
+        The 'samples' list may be empty if the firmware did not send individual values.
+        """
         try:
             parts = line[len("TRIG:"):].split()
             d: dict = {}
+            samples: list[int] = []
             for p in parts:
-                k, v = p.split("=")
-                d[k] = int(v)
+                if "=" not in p:
+                    continue
+                k, v = p.split("=", 1)
+                if k == "samples":
+                    samples = [int(x) for x in v.split(",") if x]
+                else:
+                    d[k] = int(v)
             for required in ("r", "theta", "strain_avg", "n"):
                 if required not in d:
                     return None
+            d["samples"] = samples
             return d
         except Exception:  # noqa: BLE001
             return None
