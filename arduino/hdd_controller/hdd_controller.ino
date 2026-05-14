@@ -73,6 +73,10 @@ int kickDuration = 100;
 bool scanEnabled = false;   // CMD SCAN 으로 활성화
 bool stopFlag    = false;   // CMD STOP 으로 설정
 
+// [상 변화 카운터] — trigger 마다 1씩 증가, STEPS_PER_REV 마다 0으로 리셋
+const int STEPS_PER_REV = 18;  // 3상 × 6극 = 18 상변화/rev
+unsigned int thetaStep = 0;
+
 // ============================================================
 //  유틸리티
 // ============================================================
@@ -195,9 +199,11 @@ void setPhase(bool u, bool v, bool w, int speed) {
   digitalWrite(PIN_TRIGGER_OUT, LOW);
 
   // r,theta 전송 (SoftwareSerial, 9600 baud)
+  thetaStep++;                         // 상 변화마다 증가
+  if (thetaStep >= STEPS_PER_REV) thetaStep = 0;  // 1바퀴마다 리셋
   esp32Serial.print(currentArmPWM);
   esp32Serial.print(',');
-  esp32Serial.print(rotationCounter);
+  esp32Serial.print(thetaStep);
   esp32Serial.print('\n');
 
   longDelay(currentStepD);
@@ -234,6 +240,7 @@ void performFullReset() {
   isConstantSpeed = false;
   currentStepD    = startStepD;
   rotationCounter = 0;
+  thetaStep       = 0;
   alignRotor();
 
   Serial.println("--- Reset Complete. Re-accelerating... ---\n");

@@ -211,7 +211,7 @@ void driveCoil(int power) {
 //  Setup
 // ============================================================
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(921600);
 
   // UART2 for Arduino r,theta (read-only)
   ArduinoSerial.begin(9600, SERIAL_8N1, PIN_UART2_RX, PIN_UART2_TX);

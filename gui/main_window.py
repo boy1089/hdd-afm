@@ -41,7 +41,7 @@ ARM_PARAMS: list[tuple] = [
     ("pwmStep",    "Arm PWM Step",  1,  50,   1),
 ]
 SCAN_PARAMS: list[tuple] = [
-    ("rotationsPerMove", "Rotations Per Move", 1, 9999, 40),
+    ("rotationsPerMove", "Rotations Per Move", 1, 9999, 6),
 ]
 KICK_PARAMS: list[tuple] = [
     ("kickAmount",   "Kick Amount",          0, 255,  50),
@@ -90,10 +90,8 @@ class MainWindow(QMainWindow):
         self._merged_rows: list[tuple] = []
         self._current_z_target: int = 0
 
-        # polar plot data
-        self._polar_theta:  list[float] = []
-        self._polar_r:      list[float] = []
-        self._polar_strain: list[float] = []
+        # polar plot data — dict[(r, theta_rounded)] = strain (좌표당 1개 값만 유지)
+        self._polar_dict: dict[tuple, float] = {}
         self._polar_dirty = False
         self._prev_trig_theta: float | None = None  # for inter-trigger theta interpolation
         self._trig_count = 0  # 수신된 trigger 총 횟수 (테이블 표시 throttle용)
@@ -187,9 +185,9 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(QLabel("Baud:"))
         self._esp32_baud_combo = QComboBox()
-        for b in ("9600", "19200", "57600", "115200"):
+        for b in ("9600", "19200", "57600", "115200", "460800", "921600"):
             self._esp32_baud_combo.addItem(b)
-        self._esp32_baud_combo.setCurrentText("115200")
+        self._esp32_baud_combo.setCurrentText("921600")
         layout.addWidget(self._esp32_baud_combo)
 
         self._esp32_conn_btn = QPushButton("Connect")
@@ -305,6 +303,7 @@ class MainWindow(QMainWindow):
         self._arduino_log.setReadOnly(True)
         self._arduino_log.setFont(QFont("Courier New", 10))
         self._arduino_log.setStyleSheet("background-color: #1e1e1e; color: #d4d4d4;")
+        self._arduino_log.document().setMaximumBlockCount(500)
         layout.addWidget(self._arduino_log, stretch=1)
         btn_row = QHBoxLayout()
         clear_btn = QPushButton("Clear"); clear_btn.setFixedWidth(70)
@@ -434,6 +433,7 @@ class MainWindow(QMainWindow):
         self._esp32_log.setReadOnly(True)
         self._esp32_log.setFont(QFont("Courier New", 10))
         self._esp32_log.setStyleSheet("background-color: #1a1a2e; color: #d4d4d4;")
+        self._esp32_log.document().setMaximumBlockCount(500)
         layout.addWidget(self._esp32_log, stretch=1)
         btn_row = QHBoxLayout()
         clear_btn = QPushButton("Clear"); clear_btn.setFixedWidth(70)
@@ -527,14 +527,15 @@ class MainWindow(QMainWindow):
 
     # ── polar plot 갱신 ───────────────────────────────────────────────────
     def _flush_polar_plot(self):
-        if not self._polar_dirty or not self._polar_theta:
+        if not self._polar_dirty or not self._polar_dict:
             return
         self._polar_dirty = False
 
         steps = max(1, self._steps_per_rev_sb.value())
-        theta_rad = [2.0 * math.pi * (t % steps) / steps for t in self._polar_theta]
-        r_vals     = self._polar_r
-        strain_vals = self._polar_strain
+        keys        = list(self._polar_dict.keys())
+        strain_vals = [self._polar_dict[k] for k in keys]
+        theta_rad   = [2.0 * math.pi * (k[1] % steps) / steps for k in keys]
+        r_vals      = [k[0] for k in keys]
 
         vmin = min(strain_vals)
         vmax = max(strain_vals)
@@ -556,6 +557,17 @@ class MainWindow(QMainWindow):
         )
         self._polar_fig.tight_layout(pad=1.0)
         self._polar_canvas.draw_idle()
+
+    # =======================================================================
+    #  창 닫기 — scan 중지 및 연결 해제
+    # =======================================================================
+    def closeEvent(self, event):
+        # Arduino: scan 중이면 정지
+        if self._scan_btn.isChecked():
+            self._arduino.cmd_stop()
+        self._arduino.disconnect()
+        self._esp32.disconnect()
+        event.accept()
 
     # =======================================================================
     #  포트 갱신
@@ -702,6 +714,8 @@ class MainWindow(QMainWindow):
 
         self._trig_count += 1
         self._merged_rows.append((ts, r, theta, strain_avg, n, z_tgt))
+        if len(self._merged_rows) > 5000:
+            self._merged_rows = self._merged_rows[2500:]
 
         # 테이블에는 _TABLE_STRIDE 마다 1행만 삽입 (표시 성능 유지)
         if self._trig_count % _TABLE_STRIDE == 1:
@@ -716,32 +730,29 @@ class MainWindow(QMainWindow):
         self._row_count_lbl.setText(f"{len(self._merged_rows)} rows (table: every {_TABLE_STRIDE}th)")
         self._strain_lbl.setText(str(strain_avg))
 
-        # polar plot 데이터 누적 — 개별 샘플을 이전 trigger ~ 현재 trigger theta 사이에 균일 배치
+        # polar plot 데이터 — 좌표(r, theta)당 최신 strain 1개만 유지
         samples = data.get("samples", [])
+        steps = max(1, self._steps_per_rev_sb.value())
         if samples:
             prev = self._prev_trig_theta
             for i, sv in enumerate(samples):
                 if prev is None:
                     t = float(theta)
                 else:
-                    t = prev + (i + 1) * (theta - prev) / len(samples)
-                self._polar_theta.append(t)
-                self._polar_r.append(r)
-                self._polar_strain.append(sv)
+                    delta = float(theta) - prev
+                    if delta < -(steps / 2):   # wrap-around: e.g. prev=17 → theta=0
+                        delta += steps
+                    t = (prev + (i + 1) * delta / len(samples)) % steps
+                self._polar_dict[(r, round(t, 1))] = sv
         else:
-            # fallback: firmware가 samples를 보내지 않은 경우 평균 1점
-            self._polar_theta.append(float(theta))
-            self._polar_r.append(r)
-            self._polar_strain.append(strain_avg)
+            self._polar_dict[(r, round(float(theta), 1))] = strain_avg
         self._prev_trig_theta = float(theta)
         self._polar_dirty = True
 
     def _clear_merged_table(self):
         self._merged_table.setRowCount(0)
         self._merged_rows.clear()
-        self._polar_theta.clear()
-        self._polar_r.clear()
-        self._polar_strain.clear()
+        self._polar_dict.clear()
         self._prev_trig_theta = None
         self._trig_count = 0
         self._polar_ax.clear()
