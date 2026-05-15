@@ -36,16 +36,16 @@ SPEED_PARAMS: list[tuple] = [
     ("targetStepD",  "Target Step Delay (ms)",  1,  5000,  10),
 ]
 ARM_PARAMS: list[tuple] = [
-    ("minArmPWM",  "Min Arm PWM",   0, 255,  20),
-    ("maxArmPWM",  "Max Arm PWM",   0, 255,  60),
-    ("pwmStep",    "Arm PWM Step",  1,  50,   1),
+    ("minArmPWM",  "Min Arm PWM",   0, 1023,  80),
+    ("maxArmPWM",  "Max Arm PWM",   0, 1023, 240),
+    ("pwmStep",    "Arm PWM Step",  1,   50,   1),
 ]
 SCAN_PARAMS: list[tuple] = [
     ("rotationsPerMove", "Rotations Per Move", 1, 9999, 6),
 ]
 KICK_PARAMS: list[tuple] = [
-    ("kickAmount",   "Kick Amount",          0, 255,  50),
-    ("kickDuration", "Kick Duration (ms)",   0, 999, 100),
+    ("kickAmount",   "Kick Amount",          0, 1023, 200),
+    ("kickDuration", "Kick Duration (ms)",   0,  999, 100),
 ]
 ALL_PARAM_GROUPS: list[tuple] = [
     ("Speed",   SPEED_PARAMS),

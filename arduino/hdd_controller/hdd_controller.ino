@@ -46,7 +46,7 @@ const int ENB  = 6;
 // [액추에이터 암 핀 설정]
 const int ARM_IN1 = 11;
 const int ARM_IN2 = 13;
-const int ARM_EN  = 3;
+const int ARM_EN  = 9;   // Timer1 OC1A — 10-bit PWM (구: pin 3 / Timer2 / 8-bit)
 
 // [로터 제어 및 가속 변수]
 int           maxS           = 110;
@@ -59,14 +59,15 @@ bool          isConstantSpeed = false;
 int rotationsPerMove = 40;
 int rotationCounter  = 0;
 
-// [액추에이터 PWM 위치 제어 변수]
-int currentArmPWM    = 20;
-int minArmPWM        = 20;
-int maxArmPWM        = 60;
+// [액추에이터 PWM 위치 제어 변수]  (10-bit 스케일: 0-1023)
+// 구 8-bit 값 × 4 ≈ 10-bit 등가 위치  (20→80, 60→240)
+int currentArmPWM    = 80;
+int minArmPWM        = 80;
+int maxArmPWM        = 240;
 int pwmStep          = 1;
 
 // [킥스타트 설정]
-int kickAmount   = 50;
+int kickAmount   = 200;   // 10-bit 스케일 (구 50 × 4)
 int kickDuration = 100;
 
 // [런타임 플래그]
@@ -76,6 +77,13 @@ bool stopFlag    = false;   // CMD STOP 으로 설정
 // [상 변화 카운터] — trigger 마다 1씩 증가, STEPS_PER_REV 마다 0으로 리셋
 const int STEPS_PER_REV = 18;  // 3상 × 6극 = 18 상변화/rev
 unsigned int thetaStep = 0;
+
+// ============================================================
+//  10-bit 암 PWM 헬퍼 (Timer1 OC1A, pin 9)
+// ============================================================
+inline void setArmPWM(int value) {
+  OCR1A = (unsigned int)constrain(value, 0, 1023);
+}
 
 // ============================================================
 //  유틸리티
@@ -136,7 +144,7 @@ void processSerial() {
       analogWrite(ENA, 0);
       analogWrite(ENB, 0);
       digitalWrite(pinU, LOW); digitalWrite(pinV, LOW); digitalWrite(pinW, LOW);
-      analogWrite(ARM_EN, 0);
+      setArmPWM(0);
       digitalWrite(ARM_IN1, LOW); digitalWrite(ARM_IN2, LOW);
       Serial.println("ACK CMD STOP");
     } else if (cmd == "RESET") {
@@ -232,9 +240,9 @@ void performFullReset() {
   Serial.println(">>> [ARM RESET] Returning to start...");
   currentArmPWM = minArmPWM;
   setArmDirection(currentArmPWM);
-  analogWrite(ARM_EN, abs(currentArmPWM) + 25);
+  setArmPWM(abs(currentArmPWM) + 25);
   delay(300);
-  analogWrite(ARM_EN, abs(currentArmPWM));
+  setArmPWM(abs(currentArmPWM));
 
   // 2. 로터 정지 및 재정렬
   isConstantSpeed = false;
@@ -252,11 +260,11 @@ void updateArmPosition() {
   if (currentArmPWM <= maxArmPWM) {
     setArmDirection(currentArmPWM);
     int absPWM  = abs(currentArmPWM);
-    int kickPWM = min(255, absPWM + kickAmount);
+    int kickPWM = min(1023, absPWM + kickAmount);
 
-    analogWrite(ARM_EN, kickPWM);
+    setArmPWM(kickPWM);
     delay(kickDuration);
-    analogWrite(ARM_EN, absPWM);
+    setArmPWM(absPWM);
 
     Serial.print(">>> [SCAN] Arm PWM: ");
     Serial.println(currentArmPWM);
@@ -278,9 +286,17 @@ void setup() {
   pinMode(PIN_TRIGGER_OUT, OUTPUT);
   digitalWrite(PIN_TRIGGER_OUT, LOW);
 
-  // PWM 주파수 높이기 (핀 5, 6, 3)
+  // Timer0: 핀 5(ENA), 6(ENB) PWM 주파수 높이기 (prescaler=1)
   TCCR0B = (TCCR0B & 0b11111000) | 0x01;
-  TCCR2B = (TCCR2B & 0b11111000) | 0x01;
+
+  // Timer1: 10-bit Phase-Correct PWM on OC1A (pin 9 = ARM_EN)
+  //   WGM11|WGM10: Phase-Correct 10-bit PWM, TOP=0x03FF (1023)
+  //   COM1A1=1, COM1A0=0: OC1A non-inverting (clear up, set down)
+  //   COM1B=00: OC1B disconnected → pin 10 (pinV) 순수 디지털 유지
+  //   CS10=1: prescaler=1 → f_PWM = 16 MHz / (2×1023) ≈ 7.8 kHz
+  TCCR1A = (1 << COM1A1) | (1 << WGM11) | (1 << WGM10);
+  TCCR1B = (1 << CS10);
+  OCR1A  = 0;
 
   performFullReset();
 }
