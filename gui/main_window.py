@@ -187,7 +187,7 @@ class MainWindow(QMainWindow):
         self._esp32_baud_combo = QComboBox()
         for b in ("9600", "19200", "57600", "115200", "460800", "921600"):
             self._esp32_baud_combo.addItem(b)
-        self._esp32_baud_combo.setCurrentText("921600")
+        self._esp32_baud_combo.setCurrentText("460800")
         layout.addWidget(self._esp32_baud_combo)
 
         self._esp32_conn_btn = QPushButton("Connect")
@@ -743,9 +743,9 @@ class MainWindow(QMainWindow):
                     if delta < -(steps / 2):   # wrap-around: e.g. prev=17 → theta=0
                         delta += steps
                     t = (prev + (i + 1) * delta / len(samples)) % steps
-                self._polar_dict[(r, round(t, 1))] = sv
+                self._polar_dict[(r, round(t, 2))] = sv
         else:
-            self._polar_dict[(r, round(float(theta), 1))] = strain_avg
+            self._polar_dict[(r, round(float(theta), 2))] = strain_avg
         self._prev_trig_theta = float(theta)
         self._polar_dirty = True
 

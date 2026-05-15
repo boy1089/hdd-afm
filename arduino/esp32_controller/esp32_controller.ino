@@ -74,13 +74,15 @@ int            strain_snapshot_n   = 0;
 int            snapshot_r      = 0;
 int            snapshot_theta  = 0;
 
-// ── Sample ring buffer (keeps up to 16 ADC readings per trigger interval) ────
-// 16 samples × ~5 bytes = ~80 bytes TX per TRIG → ~7 ms at 115200 baud
-// (64 samples took ~31 ms and caused gap sectors due to loop() blocking)
-static const int STRAIN_BUF_SIZE = 16;
+// ── Sample buffer: 64 evenly-distributed ADC readings per trigger interval ────
+// 460800 baud: 64 samples × ~5 bytes ≈ 7 ms TX — fits within a 10 ms trigger interval
+// Stride-based even sampling: stride = max(1, prev_count / BUF_SIZE)
+// so samples span the full interval rather than clustering at the end.
+static const int STRAIN_BUF_SIZE  = 64;
 static int    strain_buf[STRAIN_BUF_SIZE];
-static int    strain_buf_pos  = 0;   // next write index
-static int    strain_buf_fill = 0;   // valid entries (≤ STRAIN_BUF_SIZE)
+static int    strain_buf_write = 0;   // linear write index (0..STRAIN_BUF_SIZE-1)
+static int    strain_stride    = 1;   // samples to skip between writes (updated after each trigger)
+static int    strain_stride_ctr= 0;   // counts up to strain_stride
 
 // ── UART receive buffer for Arduino r,theta ──────────────────────────────────
 static char    uart_buf[32];
@@ -211,7 +213,8 @@ void driveCoil(int power) {
 //  Setup
 // ============================================================
 void setup() {
-  Serial.begin(921600);
+  Serial.setTxBufferSize(512);   // enough for 64-sample TRIG: line at 460800
+  Serial.begin(460800);
 
   // UART2 for Arduino r,theta (read-only)
   ArduinoSerial.begin(9600, SERIAL_8N1, PIN_UART2_RX, PIN_UART2_TX);
@@ -239,13 +242,17 @@ void loop() {
   processSerial();
   processArduinoUART();
 
-  // ── Continuous strain sampling into accumulator + ring buffer ─────────────
+  // ── Continuous strain sampling: accumulator + stride-based even distribution ──
   int raw = analogRead(PIN_STRAIN) - strain_offset;
   strain_sum   += raw;
   strain_count += 1;
-  strain_buf[strain_buf_pos] = raw;
-  strain_buf_pos = (strain_buf_pos + 1) % STRAIN_BUF_SIZE;
-  if (strain_buf_fill < STRAIN_BUF_SIZE) strain_buf_fill++;
+  // Write to buffer only every strain_stride samples so the STRAIN_BUF_SIZE
+  // slots are spread evenly across the full trigger interval.
+  strain_stride_ctr++;
+  if (strain_stride_ctr >= strain_stride && strain_buf_write < STRAIN_BUF_SIZE) {
+    strain_stride_ctr = 0;
+    strain_buf[strain_buf_write++] = raw;
+  }
 
   // ── Handle trigger event ─────────────────────────────────────────────────
   if (trig_fired) {
@@ -268,11 +275,13 @@ void loop() {
     strain_count = 0;
 
     // Emit merged record with individual samples
-    int buf_total = strain_buf_fill;
-    int buf_start = (buf_total < STRAIN_BUF_SIZE) ? 0
-                  : strain_buf_pos;   // oldest entry in circular buffer
-    strain_buf_pos  = 0;
-    strain_buf_fill = 0;
+    int buf_total = strain_buf_write;
+    // Update stride for NEXT interval: fill ~STRAIN_BUF_SIZE slots across the interval
+    if (strain_snapshot_n > 0) {
+      strain_stride = max(1, strain_snapshot_n / STRAIN_BUF_SIZE);
+    }
+    strain_buf_write   = 0;
+    strain_stride_ctr  = 0;
 
     Serial.print("TRIG: r=");           Serial.print(snapshot_r);
     Serial.print(" theta=");            Serial.print(snapshot_theta);
@@ -281,7 +290,7 @@ void loop() {
     Serial.print(" samples=");
     for (int _i = 0; _i < buf_total; _i++) {
       if (_i > 0) Serial.print(",");
-      Serial.print(strain_buf[(buf_start + _i) % STRAIN_BUF_SIZE]);
+      Serial.print(strain_buf[_i]);
     }
     Serial.println();
   }
