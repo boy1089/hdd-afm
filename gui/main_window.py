@@ -9,6 +9,8 @@ import csv
 import math
 from datetime import datetime
 
+import numpy as np
+
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 
@@ -32,13 +34,13 @@ from esp32_comm   import Esp32Comm
 # ---------------------------------------------------------------------------
 SPEED_PARAMS: list[tuple] = [
     ("maxS",         "Max Speed (0-255)",       0,   255, 110),
-    ("startStepD",   "Start Step Delay (ms)",   1,  5000,  50),
-    ("targetStepD",  "Target Step Delay (ms)",  1,  5000,  10),
+    ("startStepD",   "Start Step Delay (ms)",   1,  5000, 100),
+    ("targetStepD",  "Target Step Delay (ms)",  1,  5000,  20),
 ]
 ARM_PARAMS: list[tuple] = [
     ("minArmPWM",  "Min Arm PWM",   0, 799,  63),
-    ("maxArmPWM",  "Max Arm PWM",   0, 799, 188),
-    ("pwmStep",    "Arm PWM Step",  1,  50,   1),
+    ("maxArmPWM",  "Max Arm PWM",   0, 799, 600),
+    ("pwmStep",    "Arm PWM Step",  1,  50,  10),
 ]
 SCAN_PARAMS: list[tuple] = [
     ("rotationsPerMove", "Rotations Per Move", 1, 9999, 6),
@@ -496,6 +498,15 @@ class MainWindow(QMainWindow):
         self._polar_ax.set_theta_direction(-1)
         self._polar_fig.tight_layout(pad=1.0)
 
+        # scatter 객체를 한 번만 생성, 이후 set_offsets/set_array로 재사용
+        # 더미 점 1개로 초기화해야 colormap이 제대로 바인딩됨
+        self._scatter = self._polar_ax.scatter(
+            [0], [0], c=[0], cmap="plasma", vmin=0, vmax=1,
+            s=3, alpha=0.85, linewidths=0,
+        )
+        self._scatter.set_visible(False)  # 더미 점 숨김
+        self._polar_ax.set_rlim(0, 800)   # arm PWM 범위 고정 (0-799)
+
         self._polar_canvas = FigureCanvasQTAgg(self._polar_fig)
         self._polar_canvas.setStyleSheet("background-color: #1e1e1e;")
         polar_vbox.addWidget(self._polar_canvas, stretch=1)
@@ -533,29 +544,21 @@ class MainWindow(QMainWindow):
 
         steps = max(1, self._steps_per_rev_sb.value())
         keys        = list(self._polar_dict.keys())
-        strain_vals = [self._polar_dict[k] for k in keys]
-        theta_rad   = [2.0 * math.pi * (k[1] % steps) / steps for k in keys]
-        r_vals      = [k[0] for k in keys]
+        strain_arr  = np.array([self._polar_dict[k] for k in keys], dtype=float)
+        theta_arr   = np.array([2.0 * math.pi * (k[1] % steps) / steps for k in keys])
+        r_arr       = np.array([k[0] for k in keys], dtype=float)
 
-        vmin = min(strain_vals)
-        vmax = max(strain_vals)
+        vmin = float(strain_arr.min())
+        vmax = float(strain_arr.max())
         if vmin == vmax:
             vmax = vmin + 1
 
-        self._polar_ax.clear()
-        self._polar_ax.set_facecolor("#1e1e1e")
-        self._polar_ax.tick_params(colors="#888", labelsize=7)
-        self._polar_ax.spines["polar"].set_color("#444")
-        self._polar_ax.set_theta_zero_location("N")
-        self._polar_ax.set_theta_direction(-1)
-
-        self._polar_ax.scatter(
-            theta_rad, r_vals,
-            c=strain_vals, cmap="plasma",
-            s=3, alpha=0.85, linewidths=0,
-            vmin=vmin, vmax=vmax,
-        )
-        self._polar_fig.tight_layout(pad=1.0)
+        # ax.clear() 없이 scatter 객체 데이터만 교체
+        self._scatter.set_offsets(np.column_stack([theta_arr, r_arr]))
+        self._scatter.set_array(strain_arr)
+        self._scatter.set_clim(vmin, vmax)
+        self._scatter.set_visible(True)
+        self._polar_ax.set_rlim(0, max(float(r_arr.max()) * 1.05 + 1, 10))
         self._polar_canvas.draw_idle()
 
     # =======================================================================
@@ -755,9 +758,8 @@ class MainWindow(QMainWindow):
         self._polar_dict.clear()
         self._prev_trig_theta = None
         self._trig_count = 0
-        self._polar_ax.clear()
-        self._polar_ax.set_facecolor("#1e1e1e")
-        self._polar_ax.tick_params(colors="#888", labelsize=7)
+        self._scatter.set_offsets(np.empty((0, 2)))
+        self._scatter.set_array(np.array([]))
         self._polar_canvas.draw_idle()
         self._row_count_lbl.setText("0 rows")
 
