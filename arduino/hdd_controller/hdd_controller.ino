@@ -59,15 +59,16 @@ bool          isConstantSpeed = false;
 int rotationsPerMove = 40;
 int rotationCounter  = 0;
 
-// [액추에이터 PWM 위치 제어 변수]  (10-bit 스케일: 0-1023)
-// 구 8-bit 값 × 4 ≈ 10-bit 등가 위치  (20→80, 60→240)
-int currentArmPWM    = 80;
-int minArmPWM        = 80;
-int maxArmPWM        = 240;
+// [액추에이터 PWM 위치 제어 변수]  (800-level 스케일: 0-799)
+// ICR1=799 → f_PWM=20kHz (불가청), 800 레벨 (구 8-bit 256 레벨의 3.1×)
+// 구 8-bit 값 × 799/255 ≈ × 3.1  (20→63, 60→188)
+int currentArmPWM    = 63;
+int minArmPWM        = 63;
+int maxArmPWM        = 188;
 int pwmStep          = 1;
 
 // [킥스타트 설정]
-int kickAmount   = 200;   // 10-bit 스케일 (구 50 × 4)
+int kickAmount   = 157;   // 800-level 스케일 (구 50 × 3.1)
 int kickDuration = 100;
 
 // [런타임 플래그]
@@ -79,10 +80,10 @@ const int STEPS_PER_REV = 18;  // 3상 × 6극 = 18 상변화/rev
 unsigned int thetaStep = 0;
 
 // ============================================================
-//  10-bit 암 PWM 헬퍼 (Timer1 OC1A, pin 9)
+//  암 PWM 헬퍼 (Timer1 OC1A, pin 9, 800-level Fast PWM @ 20 kHz)
 // ============================================================
 inline void setArmPWM(int value) {
-  OCR1A = (unsigned int)constrain(value, 0, 1023);
+  OCR1A = (unsigned int)constrain(value, 0, 799);
 }
 
 // ============================================================
@@ -289,13 +290,15 @@ void setup() {
   // Timer0: 핀 5(ENA), 6(ENB) PWM 주파수 높이기 (prescaler=1)
   TCCR0B = (TCCR0B & 0b11111000) | 0x01;
 
-  // Timer1: 10-bit Phase-Correct PWM on OC1A (pin 9 = ARM_EN)
-  //   WGM11|WGM10: Phase-Correct 10-bit PWM, TOP=0x03FF (1023)
-  //   COM1A1=1, COM1A0=0: OC1A non-inverting (clear up, set down)
+  // Timer1: Fast PWM, TOP=ICR1 on OC1A (pin 9 = ARM_EN)
+  //   WGM mode 14: Fast PWM, TOP=ICR1  (WGM13|WGM12|WGM11 = 1)
+  //   COM1A1=1, COM1A0=0: OC1A non-inverting
   //   COM1B=00: OC1B disconnected → pin 10 (pinV) 순수 디지털 유지
-  //   CS10=1: prescaler=1 → f_PWM = 16 MHz / (2×1023) ≈ 7.8 kHz
-  TCCR1A = (1 << COM1A1) | (1 << WGM11) | (1 << WGM10);
-  TCCR1B = (1 << CS10);
+  //   ICR1=799, CS10=1 → f_PWM = 16 MHz / 800 = 20 kHz (불가청)
+  //   해상도: 800 레벨 (구 8-bit 256 레벨의 3.1×)
+  ICR1   = 799;
+  TCCR1A = (1 << COM1A1) | (1 << WGM11);
+  TCCR1B = (1 << WGM13) | (1 << WGM12) | (1 << CS10);
   OCR1A  = 0;
 
   performFullReset();
