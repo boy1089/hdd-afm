@@ -96,6 +96,7 @@ class MainWindow(QMainWindow):
         self._polar_dict: dict[tuple, float] = {}
         self._polar_dirty = False
         self._prev_trig_theta: float | None = None  # for inter-trigger theta interpolation
+        self._prev_trig_r:     int   | None = None  # r 변경 감지용
         self._trig_count = 0  # 수신된 trigger 총 횟수 (테이블 표시 throttle용)
 
         self._build_ui()
@@ -502,7 +503,7 @@ class MainWindow(QMainWindow):
         # 더미 점 1개로 초기화해야 colormap이 제대로 바인딩됨
         self._scatter = self._polar_ax.scatter(
             [0], [0], c=[0], cmap="plasma", vmin=0, vmax=1,
-            s=3, alpha=0.85, linewidths=0,
+            s=5, alpha=0.85, linewidths=0,
         )
         self._scatter.set_visible(False)  # 더미 점 숨김
         self._polar_ax.set_rlim(0, 800)   # arm PWM 범위 고정 (0-799)
@@ -736,17 +737,28 @@ class MainWindow(QMainWindow):
         # polar plot 데이터 — 좌표(r, theta)당 최신 strain 1개만 유지
         samples = data.get("samples", [])
         steps = max(1, self._steps_per_rev_sb.value())
+
+        # r이 바뀌면 이전 theta 기준이 달라지므로 보간 불가 → prev 리셋
+        if r != getattr(self, "_prev_trig_r", None):
+            self._prev_trig_theta = None
+        self._prev_trig_r = r
+
         if samples:
-            prev = self._prev_trig_theta
-            for i, sv in enumerate(samples):
-                if prev is None:
-                    t = float(theta)
-                else:
-                    delta = float(theta) - prev
-                    if delta < -(steps / 2):   # wrap-around: e.g. prev=17 → theta=0
-                        delta += steps
+            prev  = self._prev_trig_theta
+            delta = 0.0
+            if prev is not None:
+                delta = float(theta) - prev
+                if delta < 0:               # 로터는 단방향 → 음수 = 무조건 wrap-around
+                    delta += steps
+                if delta > steps / 2:       # 트리거 누락 데이터 신뢰성 낙음 → 보간 포기
+                    prev = None
+            if prev is None:
+                # 보간 없이 평균값만 기록
+                self._polar_dict[(r, round(float(theta), 2))] = strain_avg
+            else:
+                for i, sv in enumerate(samples):
                     t = (prev + (i + 1) * delta / len(samples)) % steps
-                self._polar_dict[(r, round(t, 2))] = sv
+                    self._polar_dict[(r, round(t, 2))] = sv
         else:
             self._polar_dict[(r, round(float(theta), 2))] = strain_avg
         self._prev_trig_theta = float(theta)
@@ -757,6 +769,7 @@ class MainWindow(QMainWindow):
         self._merged_rows.clear()
         self._polar_dict.clear()
         self._prev_trig_theta = None
+        self._prev_trig_r     = None
         self._trig_count = 0
         self._scatter.set_offsets(np.empty((0, 2)))
         self._scatter.set_array(np.array([]))
