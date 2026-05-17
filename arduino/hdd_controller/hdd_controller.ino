@@ -201,19 +201,21 @@ void setPhase(bool u, bool v, bool w, int speed) {
   analogWrite(ENA, speed);
   analogWrite(ENB, speed);
 
-  // ── Trigger pulse + r/theta 전송 → ESP32 ──────────────────────────────
-  // Trigger: brief HIGH pulse (≈10 µs)
-  digitalWrite(PIN_TRIGGER_OUT, HIGH);
-  delayMicroseconds(10);
-  digitalWrite(PIN_TRIGGER_OUT, LOW);
-
-  // r,theta 전송 (SoftwareSerial, 9600 baud)
+  // ── r/theta 전송 → ESP32 (blocking 완료 후 trigger) ────────────────────
+  // SoftwareSerial.print()는 동기 blocking 전송이므로 리턴 시 송출 완료.
+  // UART 먼저 전송 → trigger 발사 순으로 ESP32가 pending_theta를
+  // 현재 step 값으로 업데이트한 뒤 trig_fired를 처리하게 됨.
   thetaStep++;                         // 상 변화마다 증가
   if (thetaStep >= STEPS_PER_REV) thetaStep = 0;  // 1바퀴마다 리셋
   esp32Serial.print(currentArmPWM);
   esp32Serial.print(',');
   esp32Serial.print(thetaStep);
-  esp32Serial.print('\n');
+  esp32Serial.print('\n');            // blocking — 전송 완료 보장
+
+  // Trigger: brief HIGH pulse (≈10 µs) — UART 전송 완료 후 발사
+  digitalWrite(PIN_TRIGGER_OUT, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(PIN_TRIGGER_OUT, LOW);
 
   longDelay(currentStepD);
 }
@@ -290,7 +292,7 @@ void updateArmPosition() {
 // ============================================================
 void setup() {
   Serial.begin(9600);
-  esp32Serial.begin(9600);
+  esp32Serial.begin(57600);
   pinMode(ENA,          OUTPUT); pinMode(ENB,     OUTPUT);
   pinMode(pinU,         OUTPUT); pinMode(pinV,    OUTPUT); pinMode(pinW, OUTPUT);
   pinMode(ARM_IN1,      OUTPUT); pinMode(ARM_IN2, OUTPUT); pinMode(ARM_EN, OUTPUT);

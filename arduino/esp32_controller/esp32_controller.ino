@@ -217,7 +217,7 @@ void setup() {
   Serial.begin(460800);
 
   // UART2 for Arduino r,theta (read-only)
-  ArduinoSerial.begin(9600, SERIAL_8N1, PIN_UART2_RX, PIN_UART2_TX);
+  ArduinoSerial.begin(57600, SERIAL_8N1, PIN_UART2_RX, PIN_UART2_TX);
 
   // Voice coil pins
   pinMode(PIN_COIL_IN1, OUTPUT);
