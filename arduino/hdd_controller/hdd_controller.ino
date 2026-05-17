@@ -34,7 +34,7 @@ const int PIN_TRIGGER_OUT = 4;   // 상 변화 시 pulse → ESP32 GPIO18
 const int PIN_SS_RX       = 7;   // SoftwareSerial RX (ARM_EN=3 충돌 방지)
 const int PIN_SS_TX       = 2;   // SoftwareSerial TX → ESP32 GPIO16
 
-SoftwareSerial esp32Serial(PIN_SS_RX, PIN_SS_TX);
+SoftwareSerial esp32Serial(PIN_SS_RX, 2);
 
 // [로터(플래터) 핀 설정]
 const int pinU = 8;
@@ -261,11 +261,21 @@ void updateArmPosition() {
   if (currentArmPWM <= maxArmPWM) {
     setArmDirection(currentArmPWM);
     int absPWM  = abs(currentArmPWM);
-    int kickPWM = min(1023, absPWM + kickAmount);
+    int kickPWM = min(799, absPWM + kickAmount);
 
     setArmPWM(kickPWM);
     delay(kickDuration);
     setArmPWM(absPWM);
+
+    // ── 킥 진동으로 인한 로터 슬립 보정 ──────────────────────────
+    // U상(HIGH,LOW,LOW)으로 강제 고정 → 로터를 theta=0 기준점에 재정렬
+    analogWrite(ENA, maxS);
+    analogWrite(ENB, maxS);
+    digitalWrite(pinU, HIGH);
+    digitalWrite(pinV, LOW);
+    digitalWrite(pinW, LOW);
+    delay(currentStepD * 3);  // 3 스텝 주기 대기 → 로터 안정화
+    thetaStep = 0;            // 물리 위치(U상=0)에 맞춰 카운터 리셋
 
     Serial.print(">>> [SCAN] Arm PWM: ");
     Serial.println(currentArmPWM);
