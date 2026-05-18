@@ -10,11 +10,10 @@ headless_scan.py — GUI 없이 HDD 스캔을 실행하고 polar plot 이미지�
 
 흐름:
     1. Arduino + ESP32 시리얼 연결
-    2. Arduino CMD RESET → 가속 완료 대기
-    3. Arduino CMD SCAN 전송
-    4. ESP32 REV: 메시지를 polar_dict에 누적
-    5. Arduino "SCAN COMPLETE" 수신 → 루프 종료
-    6. polar plot 생성 및 PNG 저장
+    2. Arduino SET 파라미터 (선택) → CMD RESET → CMD SCAN
+    3. ESP32 REV: 메시지를 polar_dict에 누적
+    4. Arduino "SCAN COMPLETE" 수신 → 루프 종료
+    5. polar plot 생성 및 PNG 저장
 """
 
 from __future__ import annotations
@@ -207,10 +206,25 @@ def save_polar_plot(polar_dict: dict[tuple, float], output_path: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="HDD headless scan")
-    parser.add_argument("--arduino-port", default="/dev/cu.usbserial-1120")
+    parser.add_argument("--arduino-port", default="/dev/cu.usbserial-120")
     parser.add_argument("--esp32-port",   default="/dev/cu.usbserial-0001")
     parser.add_argument("--output",       default="scans/scan_latest.png")
+    parser.add_argument(
+        "--set", metavar="KEY=VALUE", action="append",
+        default=["targetStepD=20", "minArmPWM=20", "maxArmPWM=250", "pwmStep=10"],
+        help="Arduino SET 파라미터 (반복 가능). 예: --set maxArmPWM=300 --set pwmStep=5",
+    )
+
     args = parser.parse_args()
+
+    # KEY=VALUE 형식 검증 및 파싱
+    set_params: list[tuple[str, str]] = []
+    for item in args.set:
+        if "=" not in item:
+            print(f"[ERROR] --set 형식 오류: '{item}' (KEY=VALUE 형식 필요)", file=sys.stderr)
+            return 1
+        k, v = item.split("=", 1)
+        set_params.append((k.strip(), v.strip()))
 
     print(f"[headless_scan] Arduino={args.arduino_port}  ESP32={args.esp32_port}")
     print(f"[headless_scan] Output={args.output}")
@@ -239,28 +253,36 @@ def main() -> int:
     reader.start()
 
     try:
-        # ── 3. Arduino RESET ─────────────────────────────────────────────────
+        # ── 3. Arduino 파라미터 설정 ─────────────────────────────────────────
+        if set_params:
+            print(f"\n[STEP 0] 파라미터 설정 ({len(set_params)}개) …")
+            for key, val in set_params:
+                send_cmd(ard, f"SET {key} {val}")
+                if not wait_for(ard, f"ACK SET {key}", 3.0):
+                    print(f"[ERROR] SET {key} ACK 수신 실패", file=sys.stderr)
+                    return 1
+                print(f"  ✓ {key}={val}")
+
+        # ── 4. Arduino RESET ─────────────────────────────────────────────────
+        # GUI의 RESET 버튼과 동일: CMD RESET → ACK 대기
         print("\n[STEP 1] CMD RESET 전송 …")
         send_cmd(ard, "CMD RESET")
         if not wait_for(ard, "ACK CMD RESET", RESET_TIMEOUT_S, "[Arduino]"):
             print("[ERROR] CMD RESET ACK 수신 실패", file=sys.stderr)
             return 1
 
-        # ── 4. 일정 속도 도달 대기 ───────────────────────────────────────────
-        print(f"\n[STEP 2] Constant speed 대기 (최대 {SPEED_TIMEOUT_S}s) …")
-        if not wait_for(ard, "Constant speed", SPEED_TIMEOUT_S, "[Arduino]"):
-            print("[ERROR] Constant speed 메시지 수신 실패", file=sys.stderr)
-            return 1
-
         # ── 5. CMD SCAN ──────────────────────────────────────────────────────
-        print("\n[STEP 3] CMD SCAN 전송 …")
+        # GUI의 SCAN 버튼과 동일: CMD SCAN → ACK 대기
+        # Arduino 펌웨어는 isConstantSpeed && scanEnabled 가 모두 true일 때
+        # 스캔을 시작하므로, 속도 도달 전에 보내도 자동으로 대기 후 시작됨
+        print("\n[STEP 2] CMD SCAN 전송 …")
         send_cmd(ard, "CMD SCAN")
         if not wait_for(ard, "ACK CMD SCAN", 5.0, "[Arduino]"):
             print("[ERROR] CMD SCAN ACK 수신 실패", file=sys.stderr)
             return 1
 
         # ── 6. SCAN COMPLETE 대기 ────────────────────────────────────────────
-        print(f"\n[STEP 4] SCAN COMPLETE 대기 (최대 {SCAN_TIMEOUT_S}s) …")
+        print(f"\n[STEP 3] SCAN COMPLETE 대기 (최대 {SCAN_TIMEOUT_S}s) …")
         if not wait_for(ard, "SCAN COMPLETE", SCAN_TIMEOUT_S, "[Arduino]"):
             print("[ERROR] SCAN COMPLETE 수신 실패 — 타임아웃", file=sys.stderr)
             # 데이터가 있으면 부분 저장
@@ -269,7 +291,7 @@ def main() -> int:
             else:
                 return 1
 
-        print(f"\n[STEP 5] 스캔 완료 — {reader.rev_count}링 수신")
+        print(f"\n[STEP 4] 스캔 완료 — {reader.rev_count}링 수신")
 
     finally:
         reader.stop()
@@ -277,7 +299,7 @@ def main() -> int:
         esp.close()
 
     # ── 7. 이미지 저장 ────────────────────────────────────────────────────────
-    print("\n[STEP 6] polar plot 생성 …")
+    print("\n[STEP 5] polar plot 생성 …")
     save_polar_plot(reader.polar_dict, args.output)
 
     return 0
