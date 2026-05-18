@@ -7,7 +7,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKIP_SETUP=false
 SKIP_UPLOAD=false
-ARDUINO_PORT="/dev/cu.usbserial-1120"
+ARDUINO_PORT="/dev/cu.usbserial-120"
 ESP32_PORT="/dev/cu.usbserial-0001"
 
 # ── 인수 파싱 ──────────────────────────────────────────────────────────────

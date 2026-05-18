@@ -61,6 +61,8 @@ class Esp32Comm(QObject):
 
     data_received      = pyqtSignal(str)
     trig_received      = pyqtSignal(dict)
+    dtrig_received     = pyqtSignal(dict)
+    rev_received       = pyqtSignal(dict)
     connection_changed = pyqtSignal(bool)
     error_occurred     = pyqtSignal(str)
 
@@ -116,6 +118,14 @@ class Esp32Comm(QObject):
             parsed = self._parse_trig(line)
             if parsed:
                 self.trig_received.emit(parsed)
+        elif line.startswith("DTRIG:"):
+            parsed = self._parse_dtrig(line)
+            if parsed:
+                self.dtrig_received.emit(parsed)
+        elif line.startswith("REV:"):
+            parsed = self._parse_rev(line)
+            if parsed:
+                self.rev_received.emit(parsed)
 
     def _on_reader_error(self, msg: str) -> None:
         self.error_occurred.emit(msg)
@@ -144,6 +154,58 @@ class Esp32Comm(QObject):
                 if required not in d:
                     return None
             d["samples"] = samples
+            return d
+        except Exception:  # noqa: BLE001
+            return None
+
+    @staticmethod
+    def _parse_dtrig(line: str) -> dict | None:
+        """'DTRIG: r=<r> tidx=<i> n=<n> samples=<v0>,<v1>,...' 파싱.
+
+        Returns {"r": int, "tidx": int, "n": int, "samples": list[int]}
+        """
+        try:
+            parts = line[len("DTRIG:"):].split()
+            d: dict = {}
+            samples: list[int] = []
+            for p in parts:
+                if "=" not in p:
+                    continue
+                k, v = p.split("=", 1)
+                if k == "samples":
+                    samples = [int(x) for x in v.split(",") if x]
+                else:
+                    d[k] = int(v)
+            for required in ("r", "tidx", "n"):
+                if required not in d:
+                    return None
+            d["samples"] = samples
+            return d
+        except Exception:  # noqa: BLE001
+            return None
+
+    @staticmethod
+    def _parse_rev(line: str) -> dict | None:
+        """'REV: r=<r> n=<n> data=<v0>,<v1>,...' 파싱.
+
+        Returns {"r": int, "n": int, "data": list[int]}
+        """
+        try:
+            parts = line[len("REV:"):].split()
+            d: dict = {}
+            values: list[int] = []
+            for p in parts:
+                if "=" not in p:
+                    continue
+                k, v = p.split("=", 1)
+                if k == "data":
+                    values = [int(x) for x in v.split(",") if x]
+                else:
+                    d[k] = int(v)
+            for required in ("r", "n"):
+                if required not in d:
+                    return None
+            d["data"] = values
             return d
         except Exception:  # noqa: BLE001
             return None

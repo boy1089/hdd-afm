@@ -88,6 +88,15 @@ static int    strain_stride_ctr= 0;   // counts up to strain_stride
 static char    uart_buf[32];
 static int     uart_buf_pos    = 0;
 
+// ── Data-mode: 2-revolution 프로토콜 ─────────────────────────────────────────
+// Arduino가 "DATA,<r>\n" 전송 → data_mode 진입 → trigger 18개 누적 → "REV: ..." 출력
+static const int STEPS_PER_REV = 18;
+static bool  data_mode      = false;
+static int   data_r         = 0;
+static int   data_theta_idx = 0;
+static long  data_strain_sum[STEPS_PER_REV];
+static int   data_strain_cnt[STEPS_PER_REV];
+
 // ============================================================
 //  ISR — fired on rising edge of trigger pin
 // ============================================================
@@ -173,12 +182,21 @@ void processArduinoUART() {
     if (c == '\n' || c == '\r') {
       uart_buf[uart_buf_pos] = '\0';
       if (uart_buf_pos > 0) {
-        // Parse "<r>,<theta>"
+        // "DATA,<r>" or "<r>,<theta>" 두 가지 형식 처리
         char *comma = strchr(uart_buf, ',');
         if (comma) {
           *comma = '\0';
-          pending_r     = atoi(uart_buf);
-          pending_theta = atoi(comma + 1);
+          if (strcmp(uart_buf, "DATA") == 0) {
+            // Data rev 시작 마커 — 18개 trigger 누적 준비
+            data_r         = atoi(comma + 1);
+            data_mode      = true;
+            data_theta_idx = 0;
+            memset(data_strain_sum, 0, sizeof(data_strain_sum));
+            memset(data_strain_cnt, 0, sizeof(data_strain_cnt));
+          } else {
+            pending_r     = atoi(uart_buf);
+            pending_theta = atoi(comma + 1);
+          }
         }
       }
       uart_buf_pos = 0;
@@ -213,7 +231,7 @@ void driveCoil(int power) {
 //  Setup
 // ============================================================
 void setup() {
-  Serial.setTxBufferSize(512);   // enough for 64-sample TRIG: line at 460800
+  Serial.setTxBufferSize(4096);  // DTRIG: × 18 + REV: 전송 여유
   Serial.begin(460800);
 
   // UART2 for Arduino r,theta (read-only)
@@ -258,41 +276,75 @@ void loop() {
   if (trig_fired) {
     trig_fired = false;
 
-    // Snapshot position and accumulator atomically
     noInterrupts();
-    snapshot_r       = pending_r;
-    snapshot_theta   = pending_theta;
+    snapshot_r     = pending_r;
+    snapshot_theta = pending_theta;
     interrupts();
 
-    if (strain_count > 0) {
-      strain_snapshot_avg = (int)(strain_sum / strain_count);
-      strain_snapshot_n   = strain_count;
+    int avg_val = (strain_count > 0) ? (int)(strain_sum / strain_count) : raw;
+    int cnt_val = (strain_count > 0) ? strain_count : 1;
+    if (cnt_val > 0) {
+      strain_stride = max(1, cnt_val / STRAIN_BUF_SIZE);
+    }
+    int buf_total     = strain_buf_write;  // 리셋 전에 저장
+    strain_sum        = 0;
+    strain_count      = 0;
+    strain_buf_write  = 0;
+    strain_stride_ctr = 0;
+
+    if (data_mode) {
+      // Data rev: theta_idx 위치에 avg 누적
+      if (data_theta_idx < STEPS_PER_REV) {
+        data_strain_sum[data_theta_idx] += avg_val;
+        data_strain_cnt[data_theta_idx] += cnt_val;
+
+        // DTRIG: 출력 — GUI가 이 구간의 샘플로 sub-theta 보간
+        // tidx=data_theta_idx, 샘플은 최대 16개로 균등 축소
+        Serial.print("DTRIG: r=");    Serial.print(data_r);
+        Serial.print(" tidx=");       Serial.print(data_theta_idx);
+        Serial.print(" n=");          Serial.print(buf_total);
+        Serial.print(" samples=");
+        int out_n = (buf_total > 16) ? 16 : buf_total;
+        for (int i = 0; i < out_n; i++) {
+          if (i > 0) Serial.print(",");
+          int idx = (buf_total > 16) ? (i * buf_total / out_n) : i;
+          Serial.print(strain_buf[idx]);
+        }
+        Serial.println();
+
+        data_theta_idx++;
+      }
+
+      if (data_theta_idx >= STEPS_PER_REV) {
+        // 18개 완료 → REV: 출력
+        data_mode = false;
+        Serial.print("REV: r=");  Serial.print(data_r);
+        Serial.print(" n=");      Serial.print(STEPS_PER_REV);
+        Serial.print(" data=");
+        for (int i = 0; i < STEPS_PER_REV; i++) {
+          if (i > 0) Serial.print(",");
+          int v = (data_strain_cnt[i] > 0)
+                  ? (int)(data_strain_sum[i] / data_strain_cnt[i]) : 0;
+          Serial.print(v);
+        }
+        Serial.println();
+      }
     } else {
-      strain_snapshot_avg = raw;
-      strain_snapshot_n   = 1;
-    }
-    strain_sum   = 0;
-    strain_count = 0;
+      // Sync rev: 기존 TRIG: 출력 (디버그/호환)
+      strain_snapshot_avg = avg_val;
+      strain_snapshot_n   = cnt_val;
 
-    // Emit merged record with individual samples
-    int buf_total = strain_buf_write;
-    // Update stride for NEXT interval: fill ~STRAIN_BUF_SIZE slots across the interval
-    if (strain_snapshot_n > 0) {
-      strain_stride = max(1, strain_snapshot_n / STRAIN_BUF_SIZE);
+      Serial.print("TRIG: r=");           Serial.print(snapshot_r);
+      Serial.print(" theta=");            Serial.print(snapshot_theta);
+      Serial.print(" strain_avg=");       Serial.print(strain_snapshot_avg);
+      Serial.print(" n=");                Serial.print(strain_snapshot_n);
+      Serial.print(" samples=");
+      for (int _i = 0; _i < buf_total; _i++) {
+        if (_i > 0) Serial.print(",");
+        Serial.print(strain_buf[_i]);
+      }
+      Serial.println();
     }
-    strain_buf_write   = 0;
-    strain_stride_ctr  = 0;
-
-    Serial.print("TRIG: r=");           Serial.print(snapshot_r);
-    Serial.print(" theta=");            Serial.print(snapshot_theta);
-    Serial.print(" strain_avg=");       Serial.print(strain_snapshot_avg);
-    Serial.print(" n=");                Serial.print(strain_snapshot_n);
-    Serial.print(" samples=");
-    for (int _i = 0; _i < buf_total; _i++) {
-      if (_i > 0) Serial.print(",");
-      Serial.print(strain_buf[_i]);
-    }
-    Serial.println();
   }
 
   // ── PI control loop (Z-axis voice coil) ─────────────────────────────────

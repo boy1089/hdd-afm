@@ -55,9 +55,10 @@ unsigned long targetStepD    = 10;
 unsigned long currentStepD   = 50;
 bool          isConstantSpeed = false;
 
-// [회전 간격 제어 변수]
-int rotationsPerMove = 40;
-int rotationCounter  = 0;
+// [2-revolution 스캔 상태 머신]
+// 매 arm 위치마다: sync rev(UART+trigger) 1바퀴 → data rev(trigger only) 1바퀴
+int  scanStepCount = 0;     // 현재 rev 내 누적 step 수
+bool inDataPhase   = false; // false=sync rev, true=data rev
 
 // [액추에이터 PWM 위치 제어 변수]  (800-level 스케일: 0-799)
 // ICR1=799 → f_PWM=20kHz (불가청), 800 레벨 (구 8-bit 256 레벨의 3.1×)
@@ -117,7 +118,6 @@ void processSerial() {
     if      (key == "maxS")            maxS            = (int)val;
     else if (key == "targetStepD")     targetStepD     = (unsigned long)val;
     else if (key == "startStepD")      startStepD      = (unsigned long)val;
-    else if (key == "rotationsPerMove") rotationsPerMove = (int)val;
     else if (key == "minArmPWM")       minArmPWM       = (int)val;
     else if (key == "maxArmPWM")       maxArmPWM       = (int)val;
     else if (key == "pwmStep")         pwmStep         = (int)val;
@@ -135,8 +135,10 @@ void processSerial() {
     cmd.trim();
 
     if (cmd == "SCAN") {
-      scanEnabled = true;
-      stopFlag    = false;
+      scanEnabled   = true;
+      stopFlag      = false;
+      inDataPhase   = false;
+      scanStepCount = 0;
       Serial.println("ACK CMD SCAN");
     } else if (cmd == "STOP") {
       stopFlag    = true;
@@ -153,7 +155,6 @@ void processSerial() {
       scanEnabled = false;
       isConstantSpeed = false;
       currentStepD    = startStepD;
-      rotationCounter = 0;
       performFullReset();
       Serial.println("ACK CMD RESET");
     }
@@ -167,7 +168,6 @@ void processSerial() {
     Serial.print(" startStepD=");     Serial.print(startStepD);
     Serial.print(" targetStepD=");    Serial.print(targetStepD);
     Serial.print(" currentStepD=");   Serial.print(currentStepD);
-    Serial.print(" rotationsPerMove="); Serial.print(rotationsPerMove);
     Serial.print(" minArmPWM=");      Serial.print(minArmPWM);
     Serial.print(" maxArmPWM=");      Serial.print(maxArmPWM);
     Serial.print(" pwmStep=");        Serial.print(pwmStep);
@@ -193,7 +193,9 @@ void alignRotor() {
   delay(1000);
 }
 
-void setPhase(bool u, bool v, bool w, int speed) {
+// sendUART=true  : sync rev — UART(r,theta) blocking 전송 완료 후 trigger 발사
+// sendUART=false : data rev — trigger만 발사, UART 없음
+void setPhase(bool u, bool v, bool w, int speed, bool sendUART) {
   if (stopFlag) return;
   digitalWrite(pinU, u);
   digitalWrite(pinV, v);
@@ -201,18 +203,18 @@ void setPhase(bool u, bool v, bool w, int speed) {
   analogWrite(ENA, speed);
   analogWrite(ENB, speed);
 
-  // ── r/theta 전송 → ESP32 (blocking 완료 후 trigger) ────────────────────
-  // SoftwareSerial.print()는 동기 blocking 전송이므로 리턴 시 송출 완료.
-  // UART 먼저 전송 → trigger 발사 순으로 ESP32가 pending_theta를
-  // 현재 step 값으로 업데이트한 뒤 trig_fired를 처리하게 됨.
-  thetaStep++;                         // 상 변화마다 증가
-  if (thetaStep >= STEPS_PER_REV) thetaStep = 0;  // 1바퀴마다 리셋
-  esp32Serial.print(currentArmPWM);
-  esp32Serial.print(',');
-  esp32Serial.print(thetaStep);
-  esp32Serial.print('\n');            // blocking — 전송 완료 보장
+  thetaStep++;
+  if (thetaStep >= STEPS_PER_REV) thetaStep = 0;
 
-  // Trigger: brief HIGH pulse (≈10 µs) — UART 전송 완료 후 발사
+  if (sendUART) {
+    // blocking 전송 완료 후 trigger 발사 → ESP32 pending_theta가 현재 값으로 확정됨
+    esp32Serial.print(currentArmPWM);
+    esp32Serial.print(',');
+    esp32Serial.print(thetaStep);
+    esp32Serial.print('\n');
+  }
+
+  // Trigger pulse (≈10 µs)
   digitalWrite(PIN_TRIGGER_OUT, HIGH);
   delayMicroseconds(10);
   digitalWrite(PIN_TRIGGER_OUT, LOW);
@@ -250,7 +252,8 @@ void performFullReset() {
   // 2. 로터 정지 및 재정렬
   isConstantSpeed = false;
   currentStepD    = startStepD;
-  rotationCounter = 0;
+  scanStepCount   = 0;
+  inDataPhase     = false;
   thetaStep       = 0;
   alignRotor();
 
@@ -323,13 +326,11 @@ void loop() {
   // STOP 중이면 아무것도 안 함
   if (stopFlag) return;
 
-  // 1. 로터 회전 구동 (3-phase step)
-  setPhase(HIGH, LOW, LOW, maxS);
-  if (stopFlag) return;
-  setPhase(LOW, HIGH, LOW, maxS);
-  if (stopFlag) return;
-  setPhase(LOW, LOW, HIGH, maxS);
-  if (stopFlag) return;
+  // 1. 로터 회전 구동 (3상 full-step) — sync rev: UART+trigger / data rev: trigger only
+  bool doUART = !inDataPhase;
+  setPhase(HIGH, LOW, LOW, maxS, doUART); if (stopFlag) return;
+  setPhase(LOW, HIGH, LOW, maxS, doUART); if (stopFlag) return;
+  setPhase(LOW, LOW, HIGH, maxS, doUART); if (stopFlag) return;
 
   // 2. 가속 로직
   if (!isConstantSpeed) {
@@ -344,12 +345,23 @@ void loop() {
     }
   }
 
-  // 3. scanEnabled && 등속 → 암 스캔
+  // 3. 2-revolution 스캔 상태 머신
   if (isConstantSpeed && scanEnabled) {
-    rotationCounter++;
-    if (rotationCounter >= rotationsPerMove) {
+    scanStepCount += 3;
+    if (!inDataPhase && scanStepCount >= STEPS_PER_REV) {
+      // Sync rev 완료 → ESP32에 DATA 마커 전송 후 data rev 시작
+      scanStepCount = 0;
+      thetaStep     = 0;
+      esp32Serial.print("DATA,");
+      esp32Serial.print(currentArmPWM);
+      esp32Serial.print('\n');  // blocking 전송
+      inDataPhase = true;
+      Serial.print(">>> [SYNC→DATA] r="); Serial.println(currentArmPWM);
+    } else if (inDataPhase && scanStepCount >= STEPS_PER_REV) {
+      // Data rev 완료 → arm 이동, sync rev 재시작
+      scanStepCount = 0;
+      inDataPhase   = false;
       updateArmPosition();
-      rotationCounter = 0;
     }
   }
 }

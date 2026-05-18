@@ -82,6 +82,8 @@ class MainWindow(QMainWindow):
         self._esp32 = Esp32Comm(self)
         self._esp32.data_received.connect(self._on_esp32_data)
         self._esp32.trig_received.connect(self._on_trig_received)
+        self._esp32.dtrig_received.connect(self._on_dtrig_received)
+        self._esp32.rev_received.connect(self._on_rev_received)
         self._esp32.connection_changed.connect(self._on_esp32_conn_changed)
         self._esp32.error_occurred.connect(
             lambda m: self._log_esp32(f"[ERROR] {m}", "#ef9a9a"))
@@ -503,7 +505,7 @@ class MainWindow(QMainWindow):
         # 더미 점 1개로 초기화해야 colormap이 제대로 바인딩됨
         self._scatter = self._polar_ax.scatter(
             [0], [0], c=[0], cmap="plasma", vmin=0, vmax=1,
-            s=5, alpha=0.85, linewidths=0,
+            s=12, alpha=0.85, linewidths=0,
         )
         self._scatter.set_visible(False)  # 더미 점 숨김
         self._polar_ax.set_rlim(0, 800)   # arm PWM 범위 고정 (0-799)
@@ -549,8 +551,8 @@ class MainWindow(QMainWindow):
         theta_arr   = np.array([2.0 * math.pi * (k[1] % steps) / steps for k in keys])
         r_arr       = np.array([k[0] for k in keys], dtype=float)
 
-        vmin = float(strain_arr.min())
-        vmax = float(strain_arr.max())
+        vmin = float(np.percentile(strain_arr, 2))
+        vmax = float(np.percentile(strain_arr, 98))
         if vmin == vmax:
             vmax = vmin + 1
 
@@ -708,7 +710,7 @@ class MainWindow(QMainWindow):
     #  Merged data 핸들러
     # =======================================================================
     def _on_trig_received(self, data: dict):
-        """ESP32 TRIG: 메시지 수신 → merged 테이블에 row 추가 + polar 갱신."""
+        """ESP32 TRIG: 수신 → 로그/테이블만 기록. polar dict는 REV:만 담당."""
         ts         = datetime.now().strftime("%H:%M:%S.%f")[:-3]
         r          = data["r"]
         theta      = data["theta"]
@@ -721,7 +723,6 @@ class MainWindow(QMainWindow):
         if len(self._merged_rows) > 5000:
             self._merged_rows = self._merged_rows[2500:]
 
-        # 테이블에는 _TABLE_STRIDE 마다 1행만 삽입 (표시 성능 유지)
         if self._trig_count % _TABLE_STRIDE == 1:
             row_idx = self._merged_table.rowCount()
             self._merged_table.insertRow(row_idx)
@@ -733,36 +734,48 @@ class MainWindow(QMainWindow):
 
         self._row_count_lbl.setText(f"{len(self._merged_rows)} rows (table: every {_TABLE_STRIDE}th)")
         self._strain_lbl.setText(str(strain_avg))
+        # polar plot은 REV: 핸들러에서만 갱신 → TRIG:는 polar dict 건드리지 않음
 
-        # polar plot 데이터 — 좌표(r, theta)당 최신 strain 1개만 유지
-        samples = data.get("samples", [])
+    def _on_rev_received(self, data: dict):
+        """ESP32 REV: 수신 → polar dict에 18개 점 직접 기록 (보간 없음)."""
+        ts    = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        r     = data["r"]
+        vals  = data["data"]
+        z_tgt = self._current_z_target
+
+        for theta_idx, sv in enumerate(vals):
+            self._polar_dict[(r, float(theta_idx))] = sv
+
+        self._trig_count += len(vals)
+        for theta_idx, sv in enumerate(vals):
+            self._merged_rows.append((ts, r, theta_idx, sv, 1, z_tgt))
+        if len(self._merged_rows) > 5000:
+            self._merged_rows = self._merged_rows[2500:]
+
+        self._row_count_lbl.setText(
+            f"{len(self._merged_rows)} rows (table: every {_TABLE_STRIDE}th)")
+        self._polar_dirty = True
+        self._flush_polar_plot()   # 링 완성 즉시 그리기 (DTRIG 누적 포함)
+
+    def _on_dtrig_received(self, data: dict):
+        """ESP32 DTRIG: 수신 → data rev 구간 샘플을 sub-theta 보간으로 polar dict에 기록.
+
+        tidx 구간: 모터가 thetaStep=tidx에서 thetaStep=tidx+1로 이동하는 동안 수집된 샘플.
+        샘플 k (0-based) 는 선형 보간으로 theta = tidx + (k+0.5)/n 에 할당.
+        """
+        r       = data["r"]
+        tidx    = data["tidx"]
+        samples = data["samples"]
+        n       = len(samples)
+        if n == 0:
+            return
         steps = max(1, self._steps_per_rev_sb.value())
 
-        # r이 바뀌면 이전 theta 기준이 달라지므로 보간 불가 → prev 리셋
-        if r != getattr(self, "_prev_trig_r", None):
-            self._prev_trig_theta = None
-        self._prev_trig_r = r
+        for k, sv in enumerate(samples):
+            sub_idx = (tidx + (k + 0.5) / n) % steps  # float 0..steps
+            self._polar_dict[(r, round(sub_idx, 3))] = sv
 
-        if samples:
-            prev  = self._prev_trig_theta
-            delta = 0.0
-            if prev is not None:
-                delta = float(theta) - prev
-                if delta < 0:               # 로터는 단방향 → 음수 = 무조건 wrap-around
-                    delta += steps
-                if delta > steps / 2:       # 트리거 누락 데이터 신뢰성 낙음 → 보간 포기
-                    prev = None
-            if prev is None:
-                # 보간 없이 평균값만 기록
-                self._polar_dict[(r, round(float(theta), 2))] = strain_avg
-            else:
-                for i, sv in enumerate(samples):
-                    t = (prev + (i + 1) * delta / len(samples)) % steps
-                    self._polar_dict[(r, round(t, 2))] = sv
-        else:
-            self._polar_dict[(r, round(float(theta), 2))] = strain_avg
-        self._prev_trig_theta = float(theta)
-        self._polar_dirty = True
+        # _polar_dirty는 설정하지 않음 — 링 완성(REV:) 때만 갱신
 
     def _clear_merged_table(self):
         self._merged_table.setRowCount(0)
