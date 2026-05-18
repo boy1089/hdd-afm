@@ -296,13 +296,14 @@ void loop() {
       // Data rev: theta_idx 위치에 avg 누적
       if (data_theta_idx < STEPS_PER_REV) {
         data_strain_sum[data_theta_idx] += avg_val;
-        data_strain_cnt[data_theta_idx] += cnt_val;
+        data_strain_cnt[data_theta_idx] += 1;
 
         // DTRIG: 출력 — GUI가 이 구간의 샘플로 sub-theta 보간
         // tidx=data_theta_idx, 샘플은 최대 16개로 균등 축소
         Serial.print("DTRIG: r=");    Serial.print(data_r);
         Serial.print(" tidx=");       Serial.print(data_theta_idx);
         Serial.print(" n=");          Serial.print(buf_total);
+        Serial.print(" cnt=");        Serial.print(cnt_val);
         Serial.print(" samples=");
         int out_n = (buf_total > 16) ? 16 : buf_total;
         for (int i = 0; i < out_n; i++) {

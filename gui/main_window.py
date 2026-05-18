@@ -38,9 +38,9 @@ SPEED_PARAMS: list[tuple] = [
     ("targetStepD",  "Target Step Delay (ms)",  1,  5000,  20),
 ]
 ARM_PARAMS: list[tuple] = [
-    ("minArmPWM",  "Min Arm PWM",   0, 799,  63),
-    ("maxArmPWM",  "Max Arm PWM",   0, 799, 600),
-    ("pwmStep",    "Arm PWM Step",  1,  50,  10),
+    ("minArmPWM",  "Min Arm PWM",   0, 799,  20),
+    ("maxArmPWM",  "Max Arm PWM",   0, 799, 400),
+    ("pwmStep",    "Arm PWM Step",  1,  50,   5),
 ]
 SCAN_PARAMS: list[tuple] = [
     ("rotationsPerMove", "Rotations Per Move", 1, 9999, 6),
