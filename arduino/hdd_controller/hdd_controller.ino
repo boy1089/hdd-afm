@@ -285,7 +285,8 @@ void updateArmPosition() {
     Serial.print(">>> [SCAN] Arm PWM: ");
     Serial.println(currentArmPWM);
   } else {
-    // 암이 끝에 도달 → 전체 리셋
+    // 암이 끝에 도달 → 스캔 완료 신호 후 전체 리셋
+    Serial.println("SCAN COMPLETE");
     performFullReset();
   }
 }
